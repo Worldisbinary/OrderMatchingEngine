@@ -1,155 +1,97 @@
 # Order Matching Engine
 
-A high-performance, real-time order matching engine built in Java that simulates the core mechanics of modern stock exchanges like NYSE and NASDAQ. Implements strict **price-time priority** matching with support for all four standard order types.
+An in-memory limit order book and matching engine in Java 17. It matches orders with
+price-time priority, supports four order types across several symbols, and publishes
+order, trade and market-data events on an asynchronous event bus.
 
----
+I built it to understand exchange microstructure from the data-structure level up:
+how a book stays sorted, how partial fills and cancels work, and how market data is
+derived from the trade stream.
 
-## What Does This Project Do?
+## What it does
 
-When you place an order on a stock exchange (e.g. "Buy 100 shares of AAPL at $150"), something needs to find a matching seller and execute the trade. That's exactly what this engine does.
+1. Orders are submitted through `Exchange`, the single entry point.
+2. `MatchingEngine` routes each order to the `OrderBook` for its symbol.
+3. The book matches against the opposite side, best price first and oldest order first
+   at the same price. Trades execute at the resting (maker) order's price.
+4. Trades and order-state changes go onto an `EventBus` (a `BlockingQueue` drained by a
+   background thread). `MarketDataService` consumes them and keeps per-symbol
+   snapshots: best bid and ask, spread, mid, last price, VWAP and volume.
 
-This project simulates that entire process:
-1. **Traders submit orders** (buy or sell, at a price, for a quantity)
-2. **The engine matches them** using price-time priority — best price first, earliest order first at the same price
-3. **Trades are executed** and recorded with nanosecond latency tracking
-4. **Market data is updated** in real time (best bid, best ask, spread, VWAP)
+## Order types
 
----
+| Type | Behaviour |
+|---|---|
+| LIMIT | Fills at the limit price or better. Any remainder rests on the book. |
+| MARKET | Fills against whatever liquidity is available and never rests. |
+| IOC (immediate-or-cancel) | Fills what it can immediately and cancels the rest. |
+| FOK (fill-or-kill), `OrderType.FOC` in code | Fills completely or not at all. The book is untouched if it cannot fill. |
 
-## Order Types Supported
+## Data structures
 
-| Order Type | Behaviour |
-|------------|-----------|
-| **LIMIT**  | Execute at your specified price or better. If not fully filled, the remainder sits on the book waiting for a match. |
-| **MARKET** | Execute immediately at whatever price is available. Never sits on the book. |
-| **IOC** (Immediate-Or-Cancel) | Fill as much as possible right now, cancel whatever is left. |
-| **FOC** (Fill-Or-Cancel) | Fill the entire order or cancel it completely — no partial fills allowed. |
+| Structure | Used for | Cost |
+|---|---|---|
+| `TreeMap<Double, PriceLevel>` (bids descending, asks ascending) | sorted price levels | insert or remove a level O(log n); best price via `firstKey()` O(log n) |
+| `ArrayDeque<Order>` per price level | FIFO time priority within a level | O(1) at the head |
+| `HashMap<Long, Double>` order id to price | locating an order for cancel | O(1) to find the level, then a linear scan within it |
+| `BlockingQueue` | event bus between matching and consumers | |
+| `ConcurrentHashMap` | market-data snapshots read by other threads | |
+| `AtomicLong` | order and trade id generation | |
 
----
+## How to run
 
-## Project Structure
+Requires JDK 17 or newer.
 
-```
-src/main/java/com/ome/
-├── model/
-│   ├── Order.java           # Represents a single order (symbol, side, type, price, quantity)
-│   ├── Trade.java           # Records a matched trade between a buyer and seller
-│   ├── Side.java            # BUY or SELL
-│   ├── OrderType.java       # LIMIT, MARKET, IOC, FOC
-│   └── OrderStatus.java     # NEW → OPEN → PARTIALLY_FILLED → FILLED / CANCELLED
-│
-├── book/
-│   ├── OrderBook.java       # The core order book — maintains all resting orders for one symbol
-│   └── PriceLevel.java      # A queue of orders at the same price (time priority)
-│
-├── engine/
-│   └── MatchingEngine.java  # Routes orders to the right book, collects trades, tracks latency
-│
-├── exchange/
-│   └── Exchange.java        # Top-level facade — the only entry point for submitting orders
-│
-├── feed/
-│   ├── EventBus.java        # Async publish-subscribe bus for market events
-│   ├── MarketEvent.java     # Interface for all events
-│   ├── OrderEvent.java      # Fired when an order changes state
-│   └── TradeEvent.java      # Fired when a trade is executed
-│
-├── marketdata/
-│   ├── MarketDataService.java    # Listens to trades, builds market snapshots
-│   └── MarketDataSnapshot.java  # Point-in-time view: bid, ask, spread, VWAP, volume
-│
-└── Main.java                # Runs a full simulation with 7 scenarios
-```
-
----
-
-## Key Data Structures & Why
-
-| Structure | Used For | Why |
-|-----------|----------|-----|
-| `TreeMap<Double, PriceLevel>` | Order book (bids & asks) | Keeps prices sorted automatically. Best bid/ask in O(1) via `firstKey()` |
-| `ArrayDeque<Order>` | Orders at each price level | FIFO queue — gives time priority within a price level in O(1) |
-| `HashMap<Long, Double>` | Order lookup index | O(1) cancellation — find which price level an order is at instantly |
-| `BlockingQueue` | Event bus | Decouples matching engine from market data consumers safely |
-| `ConcurrentHashMap` | Market data snapshots | Thread-safe reads from multiple consumers simultaneously |
-
----
-
-## How Price-Time Priority Works
-
-Imagine the order book looks like this:
-
-```
-ASKS (sellers)
-  150.50  →  400 shares
-  150.25  →  200 shares
-  150.00  →  250 shares   ← best ask (lowest sell price)
-────────────────────────
-  149.90  →  150 shares   ← best bid (highest buy price)
-  149.75  →  400 shares
-  149.50  →  200 shares
-BIDS (buyers)
-```
-
-If a new BUY order comes in at $150.25:
-1. It first matches against the best ask → fills at $150.00 (250 shares)
-2. Then moves to the next level → fills at $150.25 (up to 200 shares)
-3. If anything is left unfilled → it rests on the bid side at $149.90
-
-Within each price level, the **earliest order gets filled first** (time priority).
-
----
-
-## Scenarios Simulated in Main.java
-
-| Scenario | What Happens |
-|----------|-------------|
-| 1 | Seed AAPL book with resting LIMIT orders on both sides |
-| 2 | LIMIT BUY crosses the spread — partial match, remainder rests |
-| 3 | MARKET SELL sweeps all available bids aggressively |
-| 4 | IOC BUY — fills what's available, cancels the rest immediately |
-| 5 | FOC BUY — cancelled (not enough liquidity), then filled (exact match) |
-| 6 | Order cancellation — remove a resting order from the book |
-| 7 | TSLA multi-symbol support — engine handles multiple stocks simultaneously |
-
----
-
-## Market Data Computed in Real Time
-
-After every trade the engine updates:
-- **Best Bid / Best Ask** — top of each side of the book
-- **Spread** — difference between best ask and best bid
-- **Mid Price** — halfway between bid and ask
-- **Last Traded Price** — price of the most recent trade
-- **VWAP** — Volume Weighted Average Price (total turnover ÷ total volume)
-- **Total Volume** — cumulative shares traded
-
----
-
-## How to Run
-
-**Requires:** Java 17+
-
-```powershell
-# Compile
-javac -encoding UTF-8 -d out (Get-ChildItem -Recurse -Filter "*.java" -Path "src\main" | Select-Object -ExpandProperty FullName)
-
-# Run
+```bash
+# compile and run the demo (7 scenarios: seeding, crossing limit, market sweep, IOC, FOK, cancel, second symbol)
+javac -encoding UTF-8 -d out $(find src/main -name "*.java")
 java -cp out com.ome.Main
 ```
 
----
+On Windows PowerShell:
 
-## Technologies Used
+```powershell
+javac -encoding UTF-8 -d out (Get-ChildItem -Recurse -Filter *.java -Path src\main | ForEach-Object FullName)
+java -cp out com.ome.Main
+```
 
-- **Java 17**
-- **TreeMap** — sorted price levels for O(log n) order book operations
-- **ArrayDeque** — FIFO time priority within each price level
-- **BlockingQueue** — producer-consumer event pipeline
-- **ConcurrentHashMap** — thread-safe market data storage
-- **AtomicLong** — lock-free order and trade ID generation
-- **ExecutorService / Thread** — background market data dissemination
+## Tests
 
----
+`src/test/java/com/ome/OrderBookTest.java` has 18 JUnit 5 tests covering each order type,
+partial fills, maker-price execution, price-time priority, multi-level sweeps, cancels,
+input validation, spread, mid and VWAP. There is no build file yet, so run them with the
+JUnit console launcher:
 
-*Built to simulate real-world exchange microstructure — inspired by Bloomberg EMSX and NYSE matching engine architecture.*
+```bash
+curl -LO https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.10.2/junit-platform-console-standalone-1.10.2.jar
+javac -encoding UTF-8 -d out -cp junit-platform-console-standalone-1.10.2.jar $(find src -name "*.java")
+java -jar junit-platform-console-standalone-1.10.2.jar execute --class-path out --scan-class-path
+```
+
+## Project structure
+
+```
+src/main/java/com/ome/
+  model/        Order, Trade, Side, OrderType, OrderStatus
+  book/         OrderBook (matching logic), PriceLevel (FIFO queue at one price)
+  engine/       MatchingEngine (routes orders per symbol, prints per-order wall time)
+  exchange/     Exchange (public facade)
+  feed/         EventBus and event types
+  marketdata/   MarketDataService, MarketDataSnapshot
+  Main.java     scenario walkthrough
+src/test/java/com/ome/OrderBookTest.java
+```
+
+## Limitations
+
+- Prices are `double`. A production engine would use integer ticks to avoid
+  floating-point key mismatches.
+- Orders must be submitted from a single thread, because the book is not synchronised.
+- The engine has not been benchmarked. The per-order time it prints is one `System.nanoTime()`
+  difference on a cold JVM, including event publication, so it is not a latency figure.
+- Cancelling scans the orders at one price level. There is no amend or replace, no
+  persistence and no network interface.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
