@@ -3,14 +3,21 @@ package com.ome.model;
 /**
  * Supported order types.
  *
- * LIMIT  — Execute at the specified price or better; rest on book if unmatched.
- * MARKET — Execute immediately at the best available price; never rests on book.
- * IOC    — Immediate-Or-Cancel: fill as much as possible, cancel the remainder.
- * FOC    — Fill-Or-Cancel: fill the entire quantity or cancel the whole order.
+ * <ul>
+ *   <li>{@code LIMIT}: trades at the limit price or better; any remainder rests on the book.</li>
+ *   <li>{@code MARKET}: trades at any price against the liquidity that is there; the remainder is cancelled.</li>
+ *   <li>{@code IOC} (immediate-or-cancel): trades up to the limit price; the remainder is cancelled.</li>
+ *   <li>{@code FOK} (fill-or-kill): trades the full quantity up to the limit price, or nothing at all.</li>
+ * </ul>
  */
 public enum OrderType {
     LIMIT,
     MARKET,
     IOC,
-    FOC
+    FOK;
+
+    /** True for every type except {@code MARKET}. */
+    public boolean hasLimitPrice() {
+        return this != MARKET;
+    }
 }

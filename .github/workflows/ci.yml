@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Compile, run all tests, package
+        run: ./mvnw -B -ntp verify
+
+      - name: Run the demo
+        run: java -jar target/order-matching-engine.jar demo > demo.txt && tail -n 12 demo.txt
+
+      - name: Smoke-test the load test
+        run: java -jar target/order-matching-engine.jar loadtest 200000 2 --journal
+
+      - name: Smoke-test the benchmarks compile and run
+        if: matrix.java == '21'
+        run: ./mvnw -B -ntp -q test-compile exec:exec -Djmh.args="CancelBenchmark -p queueLength=1000 -f 1 -wi 1 -i 1 -w 1s -r 1s"

@@ -1,13 +1,17 @@
 package com.ome.model;
 
-/**
- * Lifecycle status of an order.
- */
+/** Lifecycle status of an order, as carried on every execution report. */
 public enum OrderStatus {
-    NEW,           // Just submitted
-    OPEN,          // Resting on the order book
-    PARTIALLY_FILLED, // Some quantity has been matched
-    FILLED,        // Fully matched
-    CANCELLED,     // Cancelled by user or engine (IOC/FOC residual)
-    REJECTED       // Rejected (e.g. invalid parameters)
+    /** Accepted, nothing filled yet. */
+    OPEN,
+    /** Some quantity filled, some still open. */
+    PARTIALLY_FILLED,
+    FILLED,
+    CANCELLED,
+    REJECTED;
+
+    /** True once the order can no longer trade. */
+    public boolean isTerminal() {
+        return this == FILLED || this == CANCELLED || this == REJECTED;
+    }
 }

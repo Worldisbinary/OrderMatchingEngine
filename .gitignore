@@ -5,6 +5,9 @@ build/
 *.class
 *.jar
 
+# Journal written by `server`
+data/
+
 # IDE
 .vscode/
 .idea/
