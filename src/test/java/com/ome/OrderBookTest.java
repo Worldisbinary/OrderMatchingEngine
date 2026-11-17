@@ -2,6 +2,7 @@ package com.ome;
 
 import com.ome.book.OrderBook;
 import com.ome.model.*;
+import com.ome.model.Order; // explicit: org.junit.jupiter.api.* also has an Order class
 import org.junit.jupiter.api.*;
 
 import java.util.List;

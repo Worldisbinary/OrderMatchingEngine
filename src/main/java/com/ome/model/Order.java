@@ -84,8 +84,9 @@ public class Order {
         this.status = OrderStatus.CANCELLED;
     }
 
+    /** Called when the order rests on the book. A partly filled remainder stays PARTIALLY_FILLED. */
     public void markOpen() {
-        this.status = OrderStatus.OPEN;
+        if (filledQuantity == 0) this.status = OrderStatus.OPEN;
     }
 
     // ── Getters ───────────────────────────────────────────────────────────────
