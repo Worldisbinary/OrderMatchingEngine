@@ -1,8 +1,6 @@
 package com.ome.model;
 
-/**
- * Represents the direction of an order.
- */
+/** Direction of an order. */
 public enum Side {
     BUY,
     SELL;

@@ -1,86 +1,104 @@
 package com.ome.book;
 
-import com.ome.model.Order;
-
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.Iterator;
-
 /**
- * Represents all resting orders at a single price level.
+ * All resting orders at one price, oldest first. The queue is an intrusive doubly linked
+ * list threaded through the orders themselves:
  *
- * Internally uses an ArrayDeque for O(1) head access and O(1) append,
- * giving us FIFO (time-priority) matching within a price level.
+ * <ul>
+ *   <li>append at the tail: O(1)</li>
+ *   <li>match from the head: O(1)</li>
+ *   <li>remove any order (cancel, amend): O(1), because the order knows its neighbours</li>
+ * </ul>
  *
- * Tracks aggregated quantity so the order book display is O(1).
+ * The level also keeps its total open quantity so depth and fill-or-kill checks never walk the queue.
  */
-public class PriceLevel {
+final class PriceLevel {
 
-    private final double       price;
-    private final Deque<Order> orders;
-    private       int          totalQuantity;
+    final long price;
+    private Order head;
+    private Order tail;
+    private long totalQty;
+    private int size;
 
-    public PriceLevel(double price) {
-        this.price         = price;
-        this.orders        = new ArrayDeque<>();
-        this.totalQuantity = 0;
+    PriceLevel(long price) {
+        this.price = price;
     }
 
-    /**
-     * Add a new resting order to the back of the queue (time priority).
-     */
-    public void enqueue(Order order) {
-        orders.addLast(order);
-        totalQuantity += order.getRemainingQuantity();
-    }
-
-    /**
-     * Peek at the oldest (highest priority) order without removing it.
-     */
-    public Order peek() {
-        return orders.peekFirst();
-    }
-
-    /**
-     * Remove the oldest (fully filled) order from the front.
-     */
-    public Order dequeue() {
-        Order o = orders.pollFirst();
-        if (o != null) totalQuantity -= o.getRemainingQuantity();
-        return o;
-    }
-
-    /**
-     * Notify this level that some quantity was filled on the head order.
-     */
-    public void onFill(int qty) {
-        totalQuantity -= qty;
-    }
-
-    /**
-     * Remove a specific order by id (for cancellations).
-     */
-    public boolean remove(long orderId) {
-        Iterator<Order> it = orders.iterator();
-        while (it.hasNext()) {
-            Order o = it.next();
-            if (o.getOrderId() == orderId) {
-                totalQuantity -= o.getRemainingQuantity();
-                it.remove();
-                return true;
-            }
+    void append(Order order) {
+        order.level = this;
+        order.prev = tail;
+        order.next = null;
+        if (tail == null) {
+            head = order;
+        } else {
+            tail.next = order;
         }
-        return false;
+        tail = order;
+        totalQty += order.leaves;
+        size++;
     }
 
-    public boolean   isEmpty()       { return orders.isEmpty(); }
-    public int       getOrderCount() { return orders.size(); }
-    public int       getTotalQty()   { return totalQuantity; }
-    public double    getPrice()      { return price; }
+    void remove(Order order) {
+        if (order.prev == null) {
+            head = order.next;
+        } else {
+            order.prev.next = order.next;
+        }
+        if (order.next == null) {
+            tail = order.prev;
+        } else {
+            order.next.prev = order.prev;
+        }
+        totalQty -= order.leaves;
+        size--;
+        order.prev = null;
+        order.next = null;
+        order.level = null;
+    }
 
-    @Override
-    public String toString() {
-        return String.format("PriceLevel[%.2f | qty=%d | orders=%d]",
-                price, totalQuantity, orders.size());
+    /** Records that {@code qty} of a queued order was filled or cancelled down. */
+    void reduce(long qty) {
+        totalQty -= qty;
+    }
+
+    Order head() {
+        return head;
+    }
+
+    boolean isEmpty() {
+        return head == null;
+    }
+
+    long totalQty() {
+        return totalQty;
+    }
+
+    int size() {
+        return size;
+    }
+
+    /** Checks the links, the count and the quantity total. */
+    void verify() {
+        long qty = 0;
+        int count = 0;
+        Order previous = null;
+        for (Order o = head; o != null; o = o.next) {
+            check(o.prev == previous, "broken prev link at order " + o.id);
+            check(o.level == this, "order " + o.id + " points at the wrong level");
+            check(o.price == price, "order " + o.id + " has price " + o.price + " in level " + price);
+            check(o.leaves > 0, "order " + o.id + " rests with nothing open");
+            qty += o.leaves;
+            count++;
+            previous = o;
+        }
+        check(previous == tail, "tail does not match the last order at " + price);
+        check(count == size, "size " + size + " but " + count + " orders at " + price);
+        check(qty == totalQty, "total " + totalQty + " but orders sum to " + qty + " at " + price);
+    }
+
+    static void check(boolean condition, String message) {
+        if (!condition) {
+            throw new IllegalStateException(message);
+        }
     }
 }

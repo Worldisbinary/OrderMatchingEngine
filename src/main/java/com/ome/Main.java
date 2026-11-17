@@ -1,185 +1,53 @@
 package com.ome;
 
-import com.ome.exchange.Exchange;
-import com.ome.model.Order;
-import com.ome.model.OrderType;
-import com.ome.model.Side;
-import com.ome.model.Trade;
+import com.ome.cli.Demo;
+import com.ome.cli.LoadTest;
+import com.ome.cli.ServerMain;
+import com.ome.gateway.TerminalClient;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
-/**
- * End-to-end demonstration of the Order Matching Engine.
- *
- * Covers:
- *   1. Building a realistic order book (AAPL)
- *   2. LIMIT order that crosses the spread → partial fill → rest
- *   3. MARKET order that sweeps multiple price levels
- *   4. IOC order (fill what you can, cancel the rest)
- *   5. FOC order (all-or-nothing)
- *   6. Order cancellation
- *   7. Multi-symbol support (TSLA)
- *   8. Live market data snapshots
- */
-public class Main {
+/** Command-line entry point. */
+public final class Main {
 
-    public static void main(String[] args) throws InterruptedException {
+    private static final String USAGE = String.join(System.lineSeparator(),
+            "usage: java -jar order-matching-engine.jar <command>",
+            "  demo                                       guided tour of order types, amends and rejects (default)",
+            "  server [port] [journal]                    journaled exchange behind a TCP gateway on 127.0.0.1",
+            "                                             (defaults: 9090, data/journal.log)",
+            "  client [host] [port]                       interactive client (defaults: 127.0.0.1 9090)",
+            "  loadtest [commands] [threads] [--journal]  throughput and latency (defaults: 1000000 4)");
 
-        banner("Real-Time Order Matching Engine",
-               "Price-Time Priority | LIMIT | MARKET | IOC | FOC",
-               "Java 17  ·  Simulating Exchange Microstructure");
-
-        Exchange exchange = new Exchange("SIM-EXCHANGE");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 1: Seed the AAPL order book
-        // ═══════════════════════════════════════════════════════════════════
-        section("1", "Seeding AAPL Order Book with Resting LIMIT Orders");
-
-        // Bids — highest is best
-        submit(exchange, "AAPL", Side.BUY,  OrderType.LIMIT, 149.50, 200);
-        submit(exchange, "AAPL", Side.BUY,  OrderType.LIMIT, 149.75, 300);
-        submit(exchange, "AAPL", Side.BUY,  OrderType.LIMIT, 149.75, 100); // same price → time priority
-        submit(exchange, "AAPL", Side.BUY,  OrderType.LIMIT, 149.90, 150);
-
-        // Asks — lowest is best
-        submit(exchange, "AAPL", Side.SELL, OrderType.LIMIT, 150.00, 250);
-        submit(exchange, "AAPL", Side.SELL, OrderType.LIMIT, 150.25, 200);
-        submit(exchange, "AAPL", Side.SELL, OrderType.LIMIT, 150.50, 400);
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 2: LIMIT BUY crosses the spread → matches + rests remainder
-        // ═══════════════════════════════════════════════════════════════════
-        section("2", "LIMIT BUY @ 150.25 — crosses spread, partial match, remainder rests");
-
-        // BUY 400 @ 150.25 — matches 250 @ 150.00 and 150 @ 150.25 (400 total → full fill)
-        // Actually we'll buy 350 so 100 rests on the bid
-        List<Trade> trades = submit(exchange, "AAPL", Side.BUY, OrderType.LIMIT, 150.25, 350);
-        System.out.printf("  → %d trade(s) generated%n", trades.size());
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 3: MARKET SELL — sweeps bid side aggressively
-        // ═══════════════════════════════════════════════════════════════════
-        section("3", "MARKET SELL 400 — sweeps all available bids");
-
-        trades = submit(exchange, "AAPL", Side.SELL, OrderType.MARKET, 0, 400);
-        System.out.printf("  → %d trade(s) generated%n", trades.size());
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 4: IOC — fill what's available, cancel the rest
-        // ═══════════════════════════════════════════════════════════════════
-        section("4", "IOC BUY 500 @ 150.50 — partial fill, remainder cancelled");
-
-        // Seed a sell to partially fill against
-        submit(exchange, "AAPL", Side.SELL, OrderType.LIMIT, 150.50, 100);
-
-        // IOC BUY 500 @ 150.50 → only 100 available → fill 100, cancel 400
-        trades = submit(exchange, "AAPL", Side.BUY, OrderType.IOC, 150.50, 500);
-        System.out.printf("  → %d trade(s) generated%n", trades.size());
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 5: FOC — all-or-nothing
-        // ═══════════════════════════════════════════════════════════════════
-        section("5", "FOC — all-or-nothing fill");
-
-        // Seed a sell with only 50 shares
-        Order seedSell = new Order("AAPL", Side.SELL, OrderType.LIMIT, 150.00, 50);
-        submit(exchange, seedSell);
-
-        // FOC BUY 200 @ 150.00 — only 50 available → CANCELLED entirely
-        System.out.println("  FOC BUY 200 @ 150.00 (only 50 available → should CANCEL):");
-        trades = submit(exchange, "AAPL", Side.BUY, OrderType.FOC, 150.00, 200);
-        System.out.printf("  → %d trade(s) generated (expected 0)%n", trades.size());
-
-        // FOC BUY 50 @ 150.00 — exactly 50 available → FILLED entirely
-        System.out.println("  FOC BUY 50 @ 150.00 (exactly 50 available → should FILL):");
-        trades = submit(exchange, "AAPL", Side.BUY, OrderType.FOC, 150.00, 50);
-        System.out.printf("  → %d trade(s) generated (expected 1)%n", trades.size());
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 6: Cancellation
-        // ═══════════════════════════════════════════════════════════════════
-        section("6", "Order Cancellation");
-
-        Order cancelTarget = new Order("AAPL", Side.BUY, OrderType.LIMIT, 149.00, 1000);
-        submit(exchange, cancelTarget);
-
-        exchange.printBook("AAPL");
-
-        System.out.printf("  Cancelling Order #%04d...%n", cancelTarget.getOrderId());
-        exchange.cancel("AAPL", cancelTarget.getOrderId());
-
-        exchange.printBook("AAPL");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // SCENARIO 7: Multi-symbol — TSLA
-        // ═══════════════════════════════════════════════════════════════════
-        section("7", "TSLA — Multi-Symbol Support");
-
-        submit(exchange, "TSLA", Side.BUY,  OrderType.LIMIT, 244.50, 500);
-        submit(exchange, "TSLA", Side.BUY,  OrderType.LIMIT, 244.00, 300);
-        submit(exchange, "TSLA", Side.SELL, OrderType.LIMIT, 245.50, 400);
-        submit(exchange, "TSLA", Side.SELL, OrderType.LIMIT, 246.00, 600);
-
-        // Aggressive MARKET BUY sweeps the offer
-        submit(exchange, "TSLA", Side.BUY, OrderType.MARKET, 0, 350);
-
-        exchange.printBook("TSLA");
-
-        // ═══════════════════════════════════════════════════════════════════
-        // Final: Market Data & Stats
-        // ═══════════════════════════════════════════════════════════════════
-        Thread.sleep(50); // let EventBus dispatcher flush remaining events
-        exchange.shutdown();
-
-        exchange.printAllSnapshots();
-        exchange.printStats();
-
-        banner("Simulation Complete");
+    private Main() {
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private static List<Trade> submit(Exchange exchange, String symbol,
-                                       Side side, OrderType type,
-                                       double price, int qty) {
-        Order order = new Order(symbol, side, type, price, qty);
-        return submit(exchange, order);
-    }
-
-    private static List<Trade> submit(Exchange exchange, Order order) {
-        System.out.printf("%n  ➤ %s%n", order);
-        List<Trade> trades = exchange.submit(order);
-        trades.forEach(System.out::println);
-        return trades;
-    }
-
-    private static void section(String num, String title) {
-        System.out.println();
-        System.out.println("╔══════════════════════════════════════════════════════════╗");
-        System.out.printf ("║  SCENARIO %-2s: %-44s║%n", num, title);
-        System.out.println("╚══════════════════════════════════════════════════════════╝");
-    }
-
-    private static void banner(String... lines) {
-        int width = 60;
-        System.out.println("╔" + "═".repeat(width) + "╗");
-        for (String line : lines) {
-            int padding = (width - line.length()) / 2;
-            String padded = " ".repeat(Math.max(0, padding)) + line;
-            System.out.printf("║ %-" + (width - 1) + "s║%n", padded);
+    public static void main(String[] args) throws Exception {
+        String command = args.length == 0 ? "demo" : args[0];
+        List<String> rest = new ArrayList<>(Arrays.asList(args).subList(Math.min(1, args.length), args.length));
+        switch (command) {
+            case "demo" -> Demo.run(System.out);
+            case "server" -> ServerMain.run(intArg(rest, 0, 9090), Path.of(stringArg(rest, 1, "data/journal.log")));
+            case "client" -> TerminalClient.run(stringArg(rest, 0, "127.0.0.1"), intArg(rest, 1, 9090));
+            case "loadtest" -> {
+                boolean journal = rest.remove("--journal");
+                LoadTest.run(intArg(rest, 0, 1_000_000), intArg(rest, 1, 4), journal, System.out);
+            }
+            case "help", "-h", "--help" -> System.out.println(USAGE);
+            default -> {
+                System.err.println(USAGE);
+                System.exit(2);
+            }
         }
-        System.out.println("╚" + "═".repeat(width) + "╝");
-        System.out.println();
+    }
+
+    private static String stringArg(List<String> args, int index, String fallback) {
+        return index < args.size() ? args.get(index) : fallback;
+    }
+
+    private static int intArg(List<String> args, int index, int fallback) {
+        return index < args.size() ? Integer.parseInt(args.get(index).replace("_", "")) : fallback;
     }
 }
